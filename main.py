@@ -19,8 +19,8 @@ HEADERS = {
 }
 
 SEARCH_URL = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
-DETAIL_DELAY = 1.0       # seconds between each detail fetch (sequential)
-DETAIL_RETRY_AFTER = 10  # seconds to wait before retrying a 429
+DETAIL_DELAY = 0.75      # seconds between each detail fetch (sequential)
+DETAIL_RETRY_AFTER = 3   # seconds to wait before retrying a 429
 
 
 # ---------------------------------------------------------------------------
@@ -36,16 +36,12 @@ WORK_TYPE_MAP = {
 
 class SearchCriteria(BaseModel):
     location: str = ""
-    work_type: list[str] = []
+    work_type: str = ""  # "onsite", "remote", "hybrid", or ""
 
 
 class JobRequest(BaseModel):
-    keyword1: str
-    keyword2: str = ""
-    keyword3: str = ""
-    keyword4: str = ""
-    location: str = ""
-    work_type: str = ""  # "onsite", "remote", "hybrid", or ""
+    keywords: list[str]
+    searches: list[SearchCriteria]
     debug: bool = False
 
 
@@ -104,7 +100,7 @@ _LINKEDIN_JOB_URL = re.compile(
 )
 
 
-def _parse_search_page(html: str, work_types: list[str]) -> list[_PartialJob]:
+def _parse_search_page(html: str, work_type: str) -> list[_PartialJob]:
     soup = BeautifulSoup(html, "html.parser")
     jobs: list[_PartialJob] = []
     for card in soup.find_all("div", class_="base-card"):
@@ -128,7 +124,7 @@ def _parse_search_page(html: str, work_types: list[str]) -> list[_PartialJob]:
                 company=company_el.get_text(strip=True),
                 location=location_el.get_text(strip=True),
                 url=url,
-                work_types=work_types,
+                work_types=[work_type] if work_type else [],
             )
         )
     return jobs
@@ -211,13 +207,13 @@ async def _run_search(
         "f_TPR": "r86400",
     }
     if criteria.work_type:
-        params_base["f_WT"] = ",".join(WORK_TYPE_MAP[wt] for wt in criteria.work_type)
+        params_base["f_WT"] = WORK_TYPE_MAP[criteria.work_type]
 
-    label = f"location={criteria.location!r} work_type={criteria.work_type}"
+    label = f"location={criteria.location!r} work_type={criteria.work_type!r}"
     log.log(f"SEARCH_START {label} f_WT={params_base.get('f_WT', 'none')}")
 
     partials: list[_PartialJob] = []
-    for start in range(0, 25, 25):
+    for start in range(0, 75, 25):
         log.log(f"SEARCH page start={start} {label}")
         try:
             resp = await client.get(SEARCH_URL, params={**params_base, "start": start})
@@ -233,7 +229,7 @@ async def _run_search(
             log.log(f"SEARCH_STOPPED status={resp.status_code} {label}")
             break
 
-        page_jobs = _parse_search_page(resp.text, criteria.work_type)
+        page_jobs = _parse_search_page(resp.text, criteria.work_type or "")
         log.log(f"SEARCH_PARSED start={start} found={len(page_jobs)} {label}")
         if not page_jobs:
             break
@@ -291,26 +287,23 @@ async def _fetch_detail(
 async def scrape_jobs(body: JobRequest):
     log = DebugLog(enabled=body.debug)
 
-    if body.work_type and body.work_type not in WORK_TYPE_MAP:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Unknown work_type: {body.work_type!r}. Use: {list(WORK_TYPE_MAP)}",
-        )
+    for criteria in body.searches:
+        if criteria.work_type and criteria.work_type not in WORK_TYPE_MAP:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown work_type: {criteria.work_type!r}. Use: {list(WORK_TYPE_MAP)}",
+            )
 
-    keyword_query = " ".join(kw for kw in [body.keyword1, body.keyword2, body.keyword3, body.keyword4] if kw)
+    keyword_query = " ".join(body.keywords)
     log.log(f"KEYWORDS query={keyword_query!r}")
 
-    criteria = SearchCriteria(
-        location=body.location,
-        work_type=[body.work_type] if body.work_type else [],
-    )
-
     async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True, timeout=20) as client:
-        # 1. Run search and collect partials
+        # 1. Run each search criteria and collect all partials
         all_partials: list[_PartialJob] = []
-        log.log(f"SEARCH location={criteria.location!r} work_type={criteria.work_type}")
-        partials = await _run_search(client, keyword_query, criteria, log)
-        all_partials.extend(partials)
+        for i, criteria in enumerate(body.searches):
+            log.log(f"SEARCH {i + 1}/{len(body.searches)} location={criteria.location!r} work_type={criteria.work_type!r}")
+            partials = await _run_search(client, keyword_query, criteria, log)
+            all_partials.extend(partials)
 
         # 2. Deduplicate across all searches by URL
         seen: set[str] = set()
