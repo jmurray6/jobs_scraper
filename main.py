@@ -19,7 +19,7 @@ HEADERS = {
 }
 
 SEARCH_URL = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search"
-DETAIL_DELAY = 2.0       # seconds between each detail fetch (sequential)
+DETAIL_DELAY = 1.0       # seconds between each detail fetch (sequential)
 DETAIL_RETRY_AFTER = 10  # seconds to wait before retrying a 429
 
 
@@ -213,7 +213,7 @@ async def _run_search(
     log.log(f"SEARCH_START {label} f_WT={params_base.get('f_WT', 'none')}")
 
     partials: list[_PartialJob] = []
-    for start in range(0, 75, 25):
+    for start in range(0, 25, 25):
         log.log(f"SEARCH page start={start} {label}")
         try:
             resp = await client.get(SEARCH_URL, params={**params_base, "start": start})
