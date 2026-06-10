@@ -238,6 +238,7 @@ async def _run_search(
     return partials
 
 
+
 async def _fetch_detail(
     client: httpx.AsyncClient, partial: _PartialJob, log: DebugLog
 ) -> Job:
