@@ -36,12 +36,16 @@ WORK_TYPE_MAP = {
 
 class SearchCriteria(BaseModel):
     location: str = ""
-    work_type: list[str] = []  # any combo of "onsite", "remote", "hybrid"
+    work_type: list[str] = []
 
 
 class JobRequest(BaseModel):
-    keywords: list[str]
-    searches: list[SearchCriteria]
+    keyword1: str
+    keyword2: str = ""
+    keyword3: str = ""
+    keyword4: str = ""
+    location: str = ""
+    work_type: str = ""  # "onsite", "remote", "hybrid", or ""
     debug: bool = False
 
 
@@ -287,25 +291,26 @@ async def _fetch_detail(
 async def scrape_jobs(body: JobRequest):
     log = DebugLog(enabled=body.debug)
 
-    # Validate all work_type values up front
-    for criteria in body.searches:
-        unknown = [wt for wt in criteria.work_type if wt not in WORK_TYPE_MAP]
-        if unknown:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Unknown work_type value(s): {unknown}. Use: {list(WORK_TYPE_MAP)}",
-            )
+    if body.work_type and body.work_type not in WORK_TYPE_MAP:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown work_type: {body.work_type!r}. Use: {list(WORK_TYPE_MAP)}",
+        )
 
-    keyword_query = " ".join(body.keywords)
-    log.log(f"KEYWORDS {body.keywords} -> query={keyword_query!r}")
+    keyword_query = " ".join(kw for kw in [body.keyword1, body.keyword2, body.keyword3, body.keyword4] if kw)
+    log.log(f"KEYWORDS query={keyword_query!r}")
+
+    criteria = SearchCriteria(
+        location=body.location,
+        work_type=[body.work_type] if body.work_type else [],
+    )
 
     async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True, timeout=20) as client:
-        # 1. Run each search criteria and collect all partials
+        # 1. Run search and collect partials
         all_partials: list[_PartialJob] = []
-        for i, criteria in enumerate(body.searches):
-            log.log(f"SEARCH {i + 1}/{len(body.searches)} location={criteria.location!r} work_type={criteria.work_type}")
-            partials = await _run_search(client, keyword_query, criteria, log)
-            all_partials.extend(partials)
+        log.log(f"SEARCH location={criteria.location!r} work_type={criteria.work_type}")
+        partials = await _run_search(client, keyword_query, criteria, log)
+        all_partials.extend(partials)
 
         # 2. Deduplicate across all searches by URL
         seen: set[str] = set()
